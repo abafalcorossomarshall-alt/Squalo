@@ -28,11 +28,8 @@ def calcola_rsi(data, window=14):
     delta = data['Close'].diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
-    
-    # Media Mobile Esponenziale (Standard professionale come TradingView)
     ma_up = up.ewm(com=window - 1, adjust=False).mean()
     ma_down = down.ewm(com=window - 1, adjust=False).mean()
-    
     rs = ma_up / ma_down.replace(0, 0.00001)
     return 100 - (100 / (1 + rs))
 
@@ -86,24 +83,6 @@ if menu == "Dashboard Live":
         is_bullish = p_att > e_att
         c3.metric("Trend EMA 200", "BULLISH ✅" if is_bullish else "BEARISH ⚠️")
 
-        st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🧐 Logica del Trend")
-            if is_bullish:
-                st.success(f"**TREND RIALZISTA**: Prezzo sopra la EMA 200 (${e_att:,.2f}).")
-            else:
-                st.error(f"**TREND RIBASSISTA**: Prezzo sotto la EMA 200 (${e_att:,.2f}).")
-        
-        with col2:
-            st.subheader("📊 Analisi RSI")
-            if 40 <= r_att <= 55:
-                st.info(f"**ZONA SANA ({r_att:.2f})**: Pullback in corso, possibile ripartenza.")
-            elif r_att > 70:
-                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: Rischio storno.")
-            elif r_att < 30:
-                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Possibile rimbalzo.")
-
 # --- 2. SCANNER AUTOMATICO ---
 elif menu == "Scanner Automatico":
     st.header("🌊 Scanner Squalo")
@@ -115,36 +94,41 @@ elif menu == "Scanner Automatico":
         for i, t in enumerate(WATCHLIST):
             try:
                 bar.progress((i + 1) / len(WATCHLIST))
-                # Download con correzione per evitare DataFrame vuoti
                 d = yf.download(t, period="60d", interval="1h", progress=False)
                 
-                if not d.empty:
-                    if isinstance(d.columns, pd.MultiIndex): 
-                        d.columns = d.columns.get_level_values(0)
+                # CONTROLLO CRITICO: Se il download fallisce, passa al prossimo ticker
+                if d is None or d.empty or len(d) < 10:
+                    continue
+                
+                if isinstance(d.columns, pd.MultiIndex): 
+                    d.columns = d.columns.get_level_values(0)
+                
+                d_4h = d.resample('4H').last().dropna()
+                
+                if len(d_4h) > 20: # Minimo di dati per calcolare RSI/EMA
+                    d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
+                    d_4h['RSI'] = calcola_rsi(d_4h)
                     
-                    # Resample a 4 ore per la tua strategia
-                    d_4h = d.resample('4H').last().dropna()
+                    p = d_4h['Close'].iloc[-1]
+                    e = d_4h['EMA200'].iloc[-1]
+                    r = d_4h['RSI'].iloc[-1]
                     
-                    if len(d_4h) > 200:
-                        d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
-                        d_4h['RSI'] = calcola_rsi(d_4h)
+                    stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
+                    
+                    if stato == "🔥 COMPRA": 
+                        invia_email_alert(dest_mail, t, p, r)
                         
-                        p = d_4h['Close'].iloc[-1]
-                        e = d_4h['EMA200'].iloc[-1]
-                        r = d_4h['RSI'].iloc[-1]
-                        
-                        stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
-                        
-                        if stato == "🔥 COMPRA": 
-                            invia_email_alert(dest_mail, t, p, r)
-                            
-                        ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
-                time.sleep(0.5) # Anti-ban
-            except:
+                    ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
+                
+                time.sleep(1) # Rallenta per evitare il ban di Yahoo
+            except Exception as e:
+                st.warning(f"Salto {t} per errore tecnico.")
                 continue
         
         if ris:
             st.table(pd.DataFrame(ris))
+        else:
+            st.error("Yahoo Finance ha bloccato le richieste. Riprova tra 10 minuti o usa ticker singoli.")
 
 # --- 3. BACKTEST ---
 elif menu == "Backtest Strategia":
@@ -169,7 +153,7 @@ elif menu == "Backtest Strategia":
                 p, r, e = df['Close'].iloc[i], df['RSI'].iloc[i], df['EMA'].iloc[i]
                 if not pos and p > e and r_min <= r <= r_max:
                     p_in, pos = p, True
-                elif pos and p < p_in * 0.95: # SL 5%
+                elif pos and p < p_in * 0.95: 
                     cap *= (p / p_in)
                     pos = False
             st.metric("Capitale Finale (da $1000)", f"${cap:,.2f}")
