@@ -112,7 +112,12 @@ elif menu == "Scanner Automatico":
             ris = []
             for t in WATCHLIST:
                 try:
-                    d = yf.download(t, period="60d", interval="1h", progress=False)
+                    # Sostituisci la riga del download con questa:
+                   d = yf.download(t, period="60d", interval="1h", progress=False, group_by='ticker')
+
+                   if d.empty:
+                     st.error(f"Errore: Nessun dato per {t}. Yahoo Finance potrebbe aver bloccato la richiesta.")
+                     continue
                     if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
                     d_4h = d.resample('4H').last().dropna()
                     d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
