@@ -10,7 +10,7 @@ import time
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Squalo Dashboard 🦈", layout="wide")
 
-# --- RECUPERO SICURO CREDENZIALI (SECRETS) ---
+# --- RECUPERO SICURO CREDENZIALI ---
 try:
     MIA_EMAIL_SISTEMA = st.secrets["SYSTEM_EMAIL"]
     PASSWORD_APP = st.secrets["EMAIL_PASSWORD"]
@@ -23,7 +23,7 @@ WATCHLIST = [
     "JPM", "GS", "V", "WMT", "KO", "DIS", "XOM", "LLY", "AMD"
 ]
 
-# --- FUNZIONE RSI PROFESSIONALE ---
+# --- FUNZIONI TECNICHE ---
 def calcola_rsi(data, window=14):
     delta = data['Close'].diff()
     up = delta.clip(lower=0)
@@ -59,27 +59,26 @@ if menu == "Dashboard Live":
     st.header("📈 Analisi Grafica Interattiva")
     ticker_input = st.text_input("Inserisci Ticker", "NVDA").upper()
     
-    # Download dati con gestione errore
+    # Download con gestione blocchi
     data = yf.download(ticker_input, period="1y", interval="1h", progress=False)
     
     if data is None or data.empty:
-        st.error(f"Impossibile recuperare dati per {ticker_input}. Yahoo Finance potrebbe essere temporaneamente sovraccarico.")
+        st.error(f"⚠️ Errore Dati: Yahoo Finance ha bloccato la richiesta per {ticker_input}. Riprova tra qualche minuto.")
     else:
-        # Correzione colonne se MultiIndex (evita il tuo errore nello screenshot)
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
         
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['RSI'] = calcola_rsi(data)
         
-        # Grafico
+        # Grafico Plotly
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name="Prezzo", line=dict(color='#4466FF')))
         fig.add_trace(go.Scatter(x=data.index, y=data['EMA200'], name="EMA 200 (Trend)", line=dict(dash='dash', color='orange')))
-        fig.update_layout(height=500, template="plotly_dark", title=f"Analisi Tecnica {ticker_input}")
+        fig.update_layout(height=500, template="plotly_dark", title=f"Analisi Tecnica Squalo: {ticker_input}")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Metriche
+        # Metriche in tempo reale
         p_att = float(data['Close'].iloc[-1])
         r_att = float(data['RSI'].iloc[-1])
         e_att = float(data['EMA200'].iloc[-1])
@@ -90,26 +89,26 @@ if menu == "Dashboard Live":
         is_bullish = p_att > e_att
         c3.metric("Trend EMA 200", "BULLISH ✅" if is_bullish else "BEARISH ⚠️")
 
-        # --- DESCRIZIONI DETTAGLIATE DEL GRAFICO ---
+        # --- DESCRIZIONI DETTAGLIATE ---
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("🧐 Analisi del Trend (EMA 200)")
+            st.subheader("🧐 Interpretazione Trend")
             if is_bullish:
-                st.success(f"Il prezzo è sopra la media a 200 periodi (${e_att:,.2f}). Questo indica un **Trend Long** dominante. Gli Squali cercano entrate solo in questa condizione.")
+                st.success(f"**TREND RIALZISTA**: Il prezzo è sopra la EMA 200 (${e_att:,.2f}). In questa fase cerchiamo solo segnali 'Long'. La struttura di mercato è solida.")
             else:
-                st.error(f"Il prezzo è sotto la media a 200 periodi (${e_att:,.2f}). Il **Trend è Short**. In questa fase il rischio di ribassi improvvisi è elevato.")
+                st.error(f"**TREND RIBASSISTA**: Il prezzo è sotto la EMA 200 (${e_att:,.2f}). Il mercato è debole; evitare acquisti aggressivi finché non torna sopra la media.")
         
         with col2:
-            st.subheader("📊 Analisi Forza (RSI)")
+            st.subheader("📊 Analisi dell'Oscillatore (RSI)")
             if 40 <= r_att <= 55:
-                st.info(f"**ZONA RICARICA ({r_att:.2f})**: L'asset non è né troppo caro né troppo venduto. È la zona ideale per un pullback prima di una ripartenza.")
+                st.info(f"**ZONA SANA ({r_att:.2f})**: L'RSI è in zona 'Ricarica'. È il momento ideale per monitorare una ripartenza del trend primario dopo un piccolo ritracciamento.")
             elif r_att > 70:
-                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: Attenzione, il mercato è euforico. Probabile storno imminente.")
+                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: L'asset è troppo esteso. Gli acquisti ora sono rischiosi, possibile correzione tecnica in arrivo.")
             elif r_att < 30:
-                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Il mercato è nel panico. Possibile rimbalzo tecnico a breve.")
+                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Forte pressione in vendita. Potrebbe esserci un rimbalzo tecnico, ma il rischio rimane alto.")
             else:
-                st.write(f"RSI neutro a {r_att:.2f}. Il mercato è in fase di attesa.")
+                st.write(f"RSI in fase neutrale ({r_att:.2f}). Attendo segnali più chiari.")
 
 # --- 2. SCANNER AUTOMATICO ---
 elif menu == "Scanner Automatico":
@@ -119,19 +118,27 @@ elif menu == "Scanner Automatico":
     if st.button("Avvia Scansione Ora"): 
         ris = []
         bar = st.progress(0)
+        placeholder = st.empty() # Per messaggi di stato dinamici
+        
         for i, t in enumerate(WATCHLIST):
             try:
                 bar.progress((i + 1) / len(WATCHLIST))
+                placeholder.text(f"Analizzando {t}...")
+                
+                # Download con piccolo delay incrementale per non farsi bannare
                 d = yf.download(t, period="60d", interval="1h", progress=False)
                 
-                if d is None or d.empty: continue
+                if d is None or d.empty:
+                    st.warning(f"⚠️ Salto {t}: Nessun dato ricevuto da Yahoo.")
+                    time.sleep(2) # Pausa più lunga se fallisce
+                    continue
                 
                 if isinstance(d.columns, pd.MultiIndex): 
                     d.columns = d.columns.get_level_values(0)
                 
                 d_4h = d.resample('4H').last().dropna()
                 
-                if len(d_4h) > 200:
+                if len(d_4h) > 50: # Controllo minimo dati
                     d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
                     d_4h['RSI'] = calcola_rsi(d_4h)
                     
@@ -140,9 +147,17 @@ elif menu == "Scanner Automatico":
                     
                     if stato == "🔥 COMPRA": invia_email_alert(dest_mail, t, p, r)
                     ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
-                time.sleep(1) 
-            except: continue
-        if ris: st.table(pd.DataFrame(ris))
+                
+                time.sleep(1.5) # Pausa di sicurezza tra i ticker
+            except:
+                continue
+        
+        placeholder.empty()
+        if ris:
+            st.table(pd.DataFrame(ris))
+            st.success("Scansione completata con successo.")
+        else:
+            st.error("Scansione fallita: Tutti i tentativi sono stati bloccati da Yahoo Finance.")
 
 # --- 3. BACKTEST ---
 elif menu == "Backtest Strategia":
