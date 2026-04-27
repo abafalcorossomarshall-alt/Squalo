@@ -23,13 +23,16 @@ WATCHLIST = [
     "JPM", "GS", "V", "WMT", "KO", "DIS", "XOM", "LLY", "AMD"
 ]
 
-# --- FUNZIONE RSI PROFESSIONALE ---
+# --- FUNZIONE RSI PROFESSIONALE (METODO WILDER/EMA) ---
 def calcola_rsi(data, window=14):
     delta = data['Close'].diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
+    
+    # Media Mobile Esponenziale (Standard professionale come TradingView)
     ma_up = up.ewm(com=window - 1, adjust=False).mean()
     ma_down = down.ewm(com=window - 1, adjust=False).mean()
+    
     rs = ma_up / ma_down.replace(0, 0.00001)
     return 100 - (100 / (1 + rs))
 
@@ -83,45 +86,65 @@ if menu == "Dashboard Live":
         is_bullish = p_att > e_att
         c3.metric("Trend EMA 200", "BULLISH ✅" if is_bullish else "BEARISH ⚠️")
 
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🧐 Logica del Trend")
+            if is_bullish:
+                st.success(f"**TREND RIALZISTA**: Prezzo sopra la EMA 200 (${e_att:,.2f}).")
+            else:
+                st.error(f"**TREND RIBASSISTA**: Prezzo sotto la EMA 200 (${e_att:,.2f}).")
+        
+        with col2:
+            st.subheader("📊 Analisi RSI")
+            if 40 <= r_att <= 55:
+                st.info(f"**ZONA SANA ({r_att:.2f})**: Pullback in corso, possibile ripartenza.")
+            elif r_att > 70:
+                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: Rischio storno.")
+            elif r_att < 30:
+                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Possibile rimbalzo.")
+
 # --- 2. SCANNER AUTOMATICO ---
 elif menu == "Scanner Automatico":
     st.header("🌊 Scanner Squalo")
     dest_mail = st.text_input("Mail per Alert", "tua@email.com")
     
-    if st.button("Avvia Scansione Ora"):
+    if st.button("Avvia Scansione"): 
         ris = []
-        progress_bar = st.progress(0)
-        
+        bar = st.progress(0)
         for i, t in enumerate(WATCHLIST):
             try:
-                progress_bar.progress((i + 1) / len(WATCHLIST))
+                bar.progress((i + 1) / len(WATCHLIST))
+                # Download con correzione per evitare DataFrame vuoti
                 d = yf.download(t, period="60d", interval="1h", progress=False)
                 
                 if not d.empty:
                     if isinstance(d.columns, pd.MultiIndex): 
                         d.columns = d.columns.get_level_values(0)
                     
+                    # Resample a 4 ore per la tua strategia
                     d_4h = d.resample('4H').last().dropna()
+                    
                     if len(d_4h) > 200:
                         d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
                         d_4h['RSI'] = calcola_rsi(d_4h)
                         
-                        p = float(d_4h['Close'].iloc[-1])
-                        e = float(d_4h['EMA200'].iloc[-1])
-                        r = float(d_4h['RSI'].iloc[-1])
+                        p = d_4h['Close'].iloc[-1]
+                        e = d_4h['EMA200'].iloc[-1]
+                        r = d_4h['RSI'].iloc[-1]
                         
                         stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
-                        if stato == "🔥 COMPRA":
-                            invia_email_alert(dest_mail, t, p, r)
                         
+                        if stato == "🔥 COMPRA": 
+                            invia_email_alert(dest_mail, t, p, r)
+                            
                         ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
-                time.sleep(0.5) # Ritardo per evitare blocchi IP
-            except Exception:
+                time.sleep(0.5) # Anti-ban
+            except:
                 continue
         
         if ris:
             st.table(pd.DataFrame(ris))
-            st.success("Scansione completata!")
 
 # --- 3. BACKTEST ---
 elif menu == "Backtest Strategia":
@@ -139,7 +162,9 @@ elif menu == "Backtest Strategia":
                 df.columns = df.columns.get_level_values(0)
             df['EMA'] = df['Close'].ewm(span=ema_p, adjust=False).mean()
             df['RSI'] = calcola_rsi(df)
-            cap, pos = 1000, False
+            cap, pos = 1000.0, False
+            p_in = 0.0
+            
             for i in range(len(df)):
                 p, r, e = df['Close'].iloc[i], df['RSI'].iloc[i], df['EMA'].iloc[i]
                 if not pos and p > e and r_min <= r <= r_max:
@@ -147,11 +172,12 @@ elif menu == "Backtest Strategia":
                 elif pos and p < p_in * 0.95: # SL 5%
                     cap *= (p / p_in)
                     pos = False
-            st.metric("Capitale Finale", f"${cap:,.2f}")
+            st.metric("Capitale Finale (da $1000)", f"${cap:,.2f}")
 
 # --- 4. CALCOLATORE ---
 elif menu == "Calcolatore TP/SL":
-    st.header("🧮 Calcolatore")
+    st.header("🧮 Calcolatore Posizione")
     imp = st.number_input("Investimento ($)", value=1000)
-    st.success(f"TP (2%): ${imp * 1.02:.2f}")
-    st.error(f"SL (1%): ${imp * 0.99:.2f}")
+    col1, col2 = st.columns(2)
+    col1.success(f"Take Profit (Target 2%): ${imp * 1.02:.2f}")
+    col2.error(f"Stop Loss (Limite 1%): ${imp * 0.99:.2f}")
