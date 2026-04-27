@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+import requests
 import smtplib
 from email.mime.text import MIMEText
 import time
@@ -18,12 +18,26 @@ except KeyError:
     st.error("Configura 'SYSTEM_EMAIL' e 'EMAIL_PASSWORD' nei Secrets di Streamlit!")
     st.stop()
 
-WATCHLIST = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "BTC-USD", "ETH-USD", "SOL-USD",
-    "JPM", "GS", "V", "WMT", "KO", "DIS", "XOM", "LLY", "AMD"
-]
+# Watchlist separata per gestire le diverse API
+CRYPTO_LIST = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+STOCKS_LIST = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD"]
 
 # --- FUNZIONI TECNICHE ---
+
+def get_binance_data(symbol, interval='4h', limit=300):
+    """Recupera dati da Binance API (Senza blocchi IP severi)"""
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    try:
+        res = requests.get(url, timeout=10)
+        data = res.json()
+        df = pd.DataFrame(data, columns=['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QuoteAssetVolume', 'NumberTrades', 'TakerBuyBase', 'TakerBuyQuote', 'Ignore'])
+        df['Close'] = df['Close'].astype(float)
+        df['Time'] = pd.to_datetime(df['Time'], unit='ms')
+        df.set_index('Time', inplace=True)
+        return df
+    except:
+        return pd.DataFrame()
+
 def calcola_rsi(data, window=14):
     delta = data['Close'].diff()
     up = delta.clip(lower=0)
@@ -35,7 +49,7 @@ def calcola_rsi(data, window=14):
 
 def invia_email_alert(destinatario, ticker, prezzo, rsi):
     oggetto = f"🦈 SQUALO ALERT: {ticker} a {prezzo:.2f}"
-    corpo = f"Segnale rilevato per {ticker}!\nPrezzo: {prezzo:.2f}\nRSI: {rsi:.2f}\nLogica: Trend Rialzista e RSI in zona ricarica."
+    corpo = f"Segnale rilevato per {ticker}!\nPrezzo: {prezzo:.2f}\nRSI: {rsi:.2f}\nLogica: Trend Rialzista sopra EMA 200."
     msg = MIMEText(corpo)
     msg['Subject'] = oggetto
     msg['From'] = MIA_EMAIL_SISTEMA
@@ -50,139 +64,95 @@ def invia_email_alert(destinatario, ticker, prezzo, rsi):
 
 # --- SIDEBAR ---
 st.sidebar.title("🦈 Squalo Engine")
-st.sidebar.info("Saldo Demo: $89,812")
-menu = st.sidebar.selectbox("Menu Principale", 
-    ["Dashboard Live", "Scanner Automatico", "Backtest Strategia", "Calcolatore TP/SL"])
+st.sidebar.info("API ibrida: Binance + Yahoo")
+menu = st.sidebar.selectbox("Menu Principale", ["Dashboard Live", "Scanner Automatico", "Calcolatore TP/SL"])
 
 # --- 1. DASHBOARD LIVE ---
 if menu == "Dashboard Live":
-    st.header("📈 Analisi Grafica Interattiva")
-    ticker_input = st.text_input("Inserisci Ticker", "NVDA").upper()
+    st.header("📈 Analisi Grafica")
+    tk = st.text_input("Inserisci Ticker (es. BTCUSDT o NVDA)", "BTCUSDT").upper()
     
-    # Download con gestione blocchi
-    data = yf.download(ticker_input, period="1y", interval="1h", progress=False)
-    
-    if data is None or data.empty:
-        st.error(f"⚠️ Errore Dati: Yahoo Finance ha bloccato la richiesta per {ticker_input}. Riprova tra qualche minuto.")
+    # Se è una crypto di Binance
+    if "USDT" in tk:
+        df = get_binance_data(tk)
     else:
-        if isinstance(data.columns, pd.MultiIndex): 
-            data.columns = data.columns.get_level_values(0)
+        df = yf.download(tk, period="1y", interval="1h", progress=False)
+        if not df.empty and isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+    if df is None or df.empty:
+        st.error("Dati non disponibili. Controlla il Ticker o riprova.")
+    else:
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        df['RSI'] = calcola_rsi(df)
         
-        data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
-        data['RSI'] = calcola_rsi(data)
-        
-        # Grafico Plotly
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name="Prezzo", line=dict(color='#4466FF')))
-        fig.add_trace(go.Scatter(x=data.index, y=data['EMA200'], name="EMA 200 (Trend)", line=dict(dash='dash', color='orange')))
-        fig.update_layout(height=500, template="plotly_dark", title=f"Analisi Tecnica Squalo: {ticker_input}")
+        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Prezzo", line=dict(color='#4466FF')))
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA200'], name="EMA 200", line=dict(dash='dash', color='orange')))
+        fig.update_layout(height=500, template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Metriche in tempo reale
-        p_att = float(data['Close'].iloc[-1])
-        r_att = float(data['RSI'].iloc[-1])
-        e_att = float(data['EMA200'].iloc[-1])
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Prezzo Attuale", f"${p_att:,.2f}")
-        c2.metric("RSI (1h)", f"{r_att:.2f}")
-        is_bullish = p_att > e_att
-        c3.metric("Trend EMA 200", "BULLISH ✅" if is_bullish else "BEARISH ⚠️")
-
-        # --- DESCRIZIONI DETTAGLIATE ---
+        p_att, r_att, e_att = df['Close'].iloc[-1], df['RSI'].iloc[-1], df['EMA200'].iloc[-1]
+        
+        # Descrizioni Dinamiche
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("🧐 Interpretazione Trend")
-            if is_bullish:
-                st.success(f"**TREND RIALZISTA**: Il prezzo è sopra la EMA 200 (${e_att:,.2f}). In questa fase cerchiamo solo segnali 'Long'. La struttura di mercato è solida.")
+            st.subheader("🧐 Analisi Trend")
+            if p_att > e_att:
+                st.success(f"BULLISH: Prezzo (${p_att:.2f}) sopra EMA 200. Trend positivo.")
             else:
-                st.error(f"**TREND RIBASSISTA**: Il prezzo è sotto la EMA 200 (${e_att:,.2f}). Il mercato è debole; evitare acquisti aggressivi finché non torna sopra la media.")
-        
+                st.error(f"BEARISH: Prezzo (${p_att:.2f}) sotto EMA 200. Trend negativo.")
         with col2:
-            st.subheader("📊 Analisi dell'Oscillatore (RSI)")
-            if 40 <= r_att <= 55:
-                st.info(f"**ZONA SANA ({r_att:.2f})**: L'RSI è in zona 'Ricarica'. È il momento ideale per monitorare una ripartenza del trend primario dopo un piccolo ritracciamento.")
-            elif r_att > 70:
-                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: L'asset è troppo esteso. Gli acquisti ora sono rischiosi, possibile correzione tecnica in arrivo.")
-            elif r_att < 30:
-                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Forte pressione in vendita. Potrebbe esserci un rimbalzo tecnico, ma il rischio rimane alto.")
-            else:
-                st.write(f"RSI in fase neutrale ({r_att:.2f}). Attendo segnali più chiari.")
+            st.subheader("📊 Analisi RSI")
+            st.info(f"RSI attuale: {r_att:.2f}. " + ("Zona Ricarica (Ottimale)" if 40 <= r_att <= 55 else "Zona Neutra/Estrema"))
 
 # --- 2. SCANNER AUTOMATICO ---
 elif menu == "Scanner Automatico":
-    st.header("🌊 Scanner Squalo")
+    st.header("🌊 Scanner Squalo (Binance + Yahoo)")
     dest_mail = st.text_input("Mail per Alert", "tua@email.com")
     
-    if st.button("Avvia Scansione Ora"): 
+    if st.button("Avvia Scansione"):
         ris = []
         bar = st.progress(0)
-        placeholder = st.empty() # Per messaggi di stato dinamici
+        totale = len(CRYPTO_LIST) + len(STOCKS_LIST)
         
-        for i, t in enumerate(WATCHLIST):
-            try:
-                bar.progress((i + 1) / len(WATCHLIST))
-                placeholder.text(f"Analizzando {t}...")
-                
-                # Download con piccolo delay incrementale per non farsi bannare
-                d = yf.download(t, period="60d", interval="1h", progress=False)
-                
-                if d is None or d.empty:
-                    st.warning(f"⚠️ Salto {t}: Nessun dato ricevuto da Yahoo.")
-                    time.sleep(2) # Pausa più lunga se fallisce
-                    continue
-                
-                if isinstance(d.columns, pd.MultiIndex): 
-                    d.columns = d.columns.get_level_values(0)
-                
-                d_4h = d.resample('4H').last().dropna()
-                
-                if len(d_4h) > 50: # Controllo minimo dati
-                    d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
-                    d_4h['RSI'] = calcola_rsi(d_4h)
-                    
-                    p, e, r = d_4h['Close'].iloc[-1], d_4h['EMA200'].iloc[-1], d_4h['RSI'].iloc[-1]
-                    stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
-                    
-                    if stato == "🔥 COMPRA": invia_email_alert(dest_mail, t, p, r)
-                    ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
-                
-                time.sleep(1.5) # Pausa di sicurezza tra i ticker
-            except:
-                continue
-        
-        placeholder.empty()
-        if ris:
-            st.table(pd.DataFrame(ris))
-            st.success("Scansione completata con successo.")
-        else:
-            st.error("Scansione fallita: Tutti i tentativi sono stati bloccati da Yahoo Finance.")
+        # --- SCANSIONE CRYPTO (Binance - Veloce e Sicura) ---
+        for i, t in enumerate(CRYPTO_LIST):
+            bar.progress((i + 1) / totale)
+            d = get_binance_data(t)
+            if not d.empty:
+                d['EMA200'] = d['Close'].ewm(span=200, adjust=False).mean()
+                d['RSI'] = calcola_rsi(d)
+                p, e, r = d['Close'].iloc[-1], d['EMA200'].iloc[-1], d['RSI'].iloc[-1]
+                stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
+                if stato == "🔥 COMPRA": invia_email_alert(dest_mail, t, p, r)
+                ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
 
-# --- 3. BACKTEST ---
-elif menu == "Backtest Strategia":
-    st.header("🧪 Backtest Strategia Squalo")
-    ema_p = st.number_input("EMA Periodo", value=200)
-    tk = st.text_input("Ticker", "AAPL").upper()
-    if st.button("Testa"):
-        df = yf.download(tk, period="2y", interval="1h", progress=False)
-        if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            df['EMA'] = df['Close'].ewm(span=ema_p, adjust=False).mean()
-            df['RSI'] = calcola_rsi(df)
-            cap, pos = 1000.0, False
-            p_in = 0.0
-            for i in range(len(df)):
-                p, r, e = df['Close'].iloc[i], df['RSI'].iloc[i], df['EMA'].iloc[i]
-                if not pos and p > e and 40 <= r <= 55:
-                    p_in, pos = p, True
-                elif pos and p < p_in * 0.95: 
-                    cap *= (p / p_in); pos = False
-            st.metric("Capitale Finale (da $1000)", f"${cap:,.2f}")
+        # --- SCANSIONE STOCKS (Yahoo - Con pause per evitare blocchi) ---
+        for i, t in enumerate(STOCKS_LIST):
+            bar.progress((len(CRYPTO_LIST) + i + 1) / totale)
+            try:
+                d = yf.download(t, period="60d", interval="1h", progress=False)
+                if not d.empty:
+                    if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                    d_4h = d.resample('4H').last().dropna()
+                    if len(d_4h) > 50:
+                        d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
+                        d_4h['RSI'] = calcola_rsi(d_4h)
+                        p, e, r = d_4h['Close'].iloc[-1], d_4h['EMA200'].iloc[-1], d_4h['RSI'].iloc[-1]
+                        stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
+                        if stato == "🔥 COMPRA": invia_email_alert(dest_mail, t, p, r)
+                        ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
+                time.sleep(2) # Pausa necessaria per Yahoo
+            except: continue
+
+        if ris: st.table(pd.DataFrame(ris))
+        st.success("Scansione terminata!")
 
 # --- 4. CALCOLATORE ---
 elif menu == "Calcolatore TP/SL":
-    st.header("🧮 Calcolatore Posizione")
+    st.header("🧮 Calcolatore")
     imp = st.number_input("Investimento ($)", value=1000)
-    st.success(f"Take Profit (2%): ${imp * 1.02:.2f}")
-    st.error(f"Stop Loss (1%): ${imp * 0.99:.2f}")
+    st.write(f"🟢 Take Profit (2%): **${imp * 1.02:.2f}**")
+    st.write(f"🔴 Stop Loss (1%): **${imp * 0.99:.2f}**")
