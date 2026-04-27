@@ -23,16 +23,13 @@ WATCHLIST = [
     "JPM", "GS", "V", "WMT", "KO", "DIS", "XOM", "LLY", "AMD"
 ]
 
-# --- FUNZIONE RSI PROFESSIONALE (METODO WILDER/EMA) ---
+# --- FUNZIONE RSI PROFESSIONALE ---
 def calcola_rsi(data, window=14):
     delta = data['Close'].diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
-    
-    # Media Mobile Esponenziale (Standard professionale come TradingView)
     ma_up = up.ewm(com=window - 1, adjust=False).mean()
     ma_down = down.ewm(com=window - 1, adjust=False).mean()
-    
     rs = ma_up / ma_down.replace(0, 0.00001)
     return 100 - (100 / (1 + rs))
 
@@ -64,7 +61,9 @@ if menu == "Dashboard Live":
     data = yf.download(ticker_input, period="1y", interval="1h", progress=False)
     
     if not data.empty:
-        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        if isinstance(data.columns, pd.MultiIndex): 
+            data.columns = data.columns.get_level_values(0)
+        
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['RSI'] = calcola_rsi(data)
         
@@ -84,52 +83,45 @@ if menu == "Dashboard Live":
         is_bullish = p_att > e_att
         c3.metric("Trend EMA 200", "BULLISH ✅" if is_bullish else "BEARISH ⚠️")
 
-        st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🧐 Logica del Trend")
-            if is_bullish:
-                st.success(f"**TREND RIALZISTA**: Prezzo sopra la EMA 200 (${e_att:,.2f}).")
-            else:
-                st.error(f"**TREND RIBASSISTA**: Prezzo sotto la EMA 200 (${e_att:,.2f}).")
-        
-        with col2:
-            st.subheader("📊 Analisi RSI")
-            if 40 <= r_att <= 55:
-                st.info(f"**ZONA SANA ({r_att:.2f})**: Pullback in corso, possibile ripartenza.")
-            elif r_att > 70:
-                st.warning(f"**IPERCOMPRATO ({r_att:.2f})**: Il prezzo è SALITO troppo velocemente. Rischio storno.")
-            elif r_att < 30:
-                st.warning(f"**IPERVENDUTO ({r_att:.2f})**: Il prezzo è SCESO troppo velocemente. Possibile rimbalzo.")
-
 # --- 2. SCANNER AUTOMATICO ---
 elif menu == "Scanner Automatico":
-    st.header("🌊 Scanner Squalo in Loop")
+    st.header("🌊 Scanner Squalo")
     dest_mail = st.text_input("Mail per Alert", "tua@email.com")
-    freq = st.slider("Controllo ogni (ore)", 1, 12, 4)
-    if st.checkbox("Attiva Scanner"):
-        while True:
-            ris = []
-            for t in WATCHLIST:
-                try:
-                    # Sostituisci la riga del download con questa:
-                   d = yf.download(t, period="60d", interval="1h", progress=False, group_by='ticker')
-
-                   if d.empty:
-                     st.error(f"Errore: Nessun dato per {t}. Yahoo Finance potrebbe aver bloccato la richiesta.")
-                     continue
-                    if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+    
+    if st.button("Avvia Scansione Ora"):
+        ris = []
+        progress_bar = st.progress(0)
+        
+        for i, t in enumerate(WATCHLIST):
+            try:
+                progress_bar.progress((i + 1) / len(WATCHLIST))
+                d = yf.download(t, period="60d", interval="1h", progress=False)
+                
+                if not d.empty:
+                    if isinstance(d.columns, pd.MultiIndex): 
+                        d.columns = d.columns.get_level_values(0)
+                    
                     d_4h = d.resample('4H').last().dropna()
-                    d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
-                    d_4h['RSI'] = calcola_rsi(d_4h)
-                    p, e, r = d_4h['Close'].iloc[-1], d_4h['EMA200'].iloc[-1], d_4h['RSI'].iloc[-1]
-                    stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
-                    if stato == "🔥 COMPRA": invia_email_alert(dest_mail, t, p, r)
-                    ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
-                except: continue
+                    if len(d_4h) > 200:
+                        d_4h['EMA200'] = d_4h['Close'].ewm(span=200, adjust=False).mean()
+                        d_4h['RSI'] = calcola_rsi(d_4h)
+                        
+                        p = float(d_4h['Close'].iloc[-1])
+                        e = float(d_4h['EMA200'].iloc[-1])
+                        r = float(d_4h['RSI'].iloc[-1])
+                        
+                        stato = "🔥 COMPRA" if (p > e and 40 <= r <= 55) else "ATTESA"
+                        if stato == "🔥 COMPRA":
+                            invia_email_alert(dest_mail, t, p, r)
+                        
+                        ris.append({"Ticker": t, "Prezzo": round(p, 2), "RSI": round(r, 2), "Stato": stato})
+                time.sleep(0.5) # Ritardo per evitare blocchi IP
+            except Exception:
+                continue
+        
+        if ris:
             st.table(pd.DataFrame(ris))
-            time.sleep(freq * 3600)
-            st.rerun()
+            st.success("Scansione completata!")
 
 # --- 3. BACKTEST ---
 elif menu == "Backtest Strategia":
@@ -138,11 +130,13 @@ elif menu == "Backtest Strategia":
         ema_p = st.number_input("EMA Periodo", value=200)
         r_min = st.slider("RSI Min", 0, 100, 40)
         r_max = st.slider("RSI Max", 0, 100, 55)
+    
     tk = st.text_input("Ticker", "AAPL").upper()
     if st.button("Testa"):
         df = yf.download(tk, period="2y", interval="1h", progress=False)
         if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex): 
+                df.columns = df.columns.get_level_values(0)
             df['EMA'] = df['Close'].ewm(span=ema_p, adjust=False).mean()
             df['RSI'] = calcola_rsi(df)
             cap, pos = 1000, False
@@ -151,7 +145,8 @@ elif menu == "Backtest Strategia":
                 if not pos and p > e and r_min <= r <= r_max:
                     p_in, pos = p, True
                 elif pos and p < p_in * 0.95: # SL 5%
-                    cap *= (p / p_in); pos = False
+                    cap *= (p / p_in)
+                    pos = False
             st.metric("Capitale Finale", f"${cap:,.2f}")
 
 # --- 4. CALCOLATORE ---
